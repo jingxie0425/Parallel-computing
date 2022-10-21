@@ -1,0 +1,112 @@
+mainmodule life2d {
+
+  readonly CProxy_Main mainProxy;
+  readonly int arrayDimX;
+  readonly int arrayDimY;
+  readonly int blockDimX;
+  readonly int blockDimY;
+  readonly int num_chare_x;
+  readonly int num_chare_y;
+  readonly int maxiterations;
+//  readonly char* file_name;
+
+  mainchare Main {
+    entry Main(CkArgMsg *m);
+    entry void done(int totalIter);
+  };
+
+  array [2D] GLife {
+    entry GLife(void);
+    entry void send_arrs(void);
+    entry void receive_arrs(void);
+    entry void begin_iteration(void);
+    entry void receiveGhosts(int iter, int dir, int size, double ghosts[size]);
+    entry [reductiontarget] void recvTimeResult(double result);
+    entry void send_results(void);
+    entry void receiveResults(int iter, int x_idx, int y_idx, int size,
+            double ghosts[size]);
+//    entry void printGrid (void);
+
+    entry void run() {
+      serial "send arrs" {
+        send_arrs();
+      }
+      when receiveGhosts[iterations] (int iter, int dir, int size, double ghosts[size])
+        serial "process ghosts first time" {
+          processGhosts(dir, size, ghosts);
+        }
+      serial "start time" {
+        start_time = CkWallTimer();
+      }
+      while (iterations < maxiterations) {
+        serial "begin_iteration" {
+          begin_iteration();
+        }
+        for(imsg = 0; imsg < neighbors; imsg++) {
+          // "iterations" keeps track of messages across steps
+          when receiveGhosts[iterations] (int iter, int dir, int size, double ghosts[size])
+            serial "process ghosts" {
+              processGhosts(dir, size, ghosts);
+            }
+        }
+        serial "compute" { 
+          check_and_compute();
+        }
+        if (iterations>=maxiterations) {
+          serial
+          "iter ends"
+          {
+            iterations++;
+//            CkPrintf("iter ends\n");
+            if ((thisIndex.x != 0) || (thisIndex.y != 0))
+              send_results();
+          }
+          if ((thisIndex.x == 0) && (thisIndex.y == 0)) {
+            for (imsg = 0; imsg < num_chare_x * num_chare_y - 1; imsg++) {
+              when receiveResults[iterations](int iter, int x_idx, int y_idx,
+                                              int size, double ghosts[size])
+              serial
+              "process results"
+              {
+//                CkPrintf("processResults\n");
+                processResults(x_idx, y_idx, size, ghosts);
+              }
+            }
+            serial
+            "update its own and print results"
+            {
+              updateOwnGrid();
+              printGrid();
+            }
+          }
+          serial "end time" {
+            ellapse_time = CkWallTimer() - start_time;
+//            CkPrintf("time e: %f\n", ellapse_time);
+          }
+          serial "sum1 time" {
+            double conv = ellapse_time;
+            CkCallback cb(CkReductionTarget(GLife, recvTimeResult), thisProxy);
+            contribute(sizeof(double), &conv, CkReduction::min_double, cb);
+            contribute(sizeof(double), &conv, CkReduction::sum_double, cb);
+            contribute(sizeof(double), &conv, CkReduction::max_double, cb);
+          }
+          if (thisIndex.x + thisIndex.y == 0) {
+            when recvTimeResult(double result) serial "min time" {
+              CkPrintf("TIME: Min: %f s ", result);
+            }
+            when recvTimeResult(double result) serial "avg time" {
+              CkPrintf("Avg: %f s ", result/(num_chare_x*num_chare_y));
+            }
+            when recvTimeResult(double result) serial "max time" {
+              CkPrintf("Max: %f s\n", result);
+            }
+            serial "done" {
+              mainProxy.done(iterations);
+            }
+          }
+
+        }
+      }
+    };
+  };
+};
